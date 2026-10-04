@@ -2,7 +2,7 @@
 
 Decode-speed patches for PTQ1_0 / PQ2_0 ternary models (tested with Ternary-Bonsai-2-27B plus an MTP draft head) on NVIDIA Ada (RTX 4070, cc 8.9).
 They are meant to be taken one by one: every patch is also available as its own branch off `prism` (`pr/*`), applies on `prism` on its own and in any order
-(textual conflicts were checked), and is offered upstream as a separate pull request. This branch (`ktrain/fork-main` here, `ktrain` in the fork) merges all of them for
+(textual conflicts were checked), and is offered upstream as a separate pull request. This branch (`ktrain`) merges all of them for
 people who do not want to wait for the merges.
 
 **Layout:** every `pr/*` branch starts with the measured version, which contains an environment switch for A/B tests (the commit that was benchmarked), and ends with a commit that removes the switch(es) (and, where noted in the commit, fixes the constants). This stack merges each branch with `--no-ff`, so the single commits stay visible in the history and can be cherry-picked; the tip of the stack contains no switches.
