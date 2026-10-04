@@ -46,4 +46,9 @@ All 10 together against the stack without 0008-0010 (`patched-fb`): **+2.83 %** 
 Build as usual (`-DGGML_CUDA=ON`); there are no new build options and no environment switches at the tip. Individual patches can be taken from the `pr/*` branches or cherry-picked from the history of this branch.
 
 ## AI assistance
-The patches were developed with Claude Code. Commits where it was used carry a `Co-Authored-By` trailer. <!-- maintainer: describe your own review of the changes here -->
+The patches were developed with Claude Code (Anthropic's coding agent): it wrote the code,
+the measurement scripts and the first drafts of the commit messages and PR texts.
+I decided what to work on (which kernels and host paths to optimise, based on profiles of
+my own decode setup). The measurements and checks listed in the PR texts were run in the
+Claude Code sessions; I did not re-run them independently. I will maintain the changes.
+Commits where Claude Code was used carry a `Co-Authored-By` trailer.
