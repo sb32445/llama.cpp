@@ -1,4 +1,5 @@
 #include "mmvq.cuh"
+#include "l2-hint.cuh"
 #include "mmvq-ptq1_0.cuh"
 #include "quantize.cuh"
 #include "unary.cuh"
@@ -6,6 +7,8 @@
 
 #include <cstdint>
 #include <type_traits>
+
+thread_local ggml_cuda_l2_hint_t g_ggml_cuda_l2_hint;
 
 // only enabled on DGX Spark, where it is a gain on every type below. On the higher-bandwidth parts the kernel
 // has little exposed latency left to hide and the extra requests cost more than they save.
