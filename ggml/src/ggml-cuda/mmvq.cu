@@ -6,7 +6,6 @@
 #include "vecdotq.cuh"
 
 #include <cstdint>
-#include <cstdlib>
 #include <type_traits>
 
 thread_local ggml_cuda_l2_hint_t g_ggml_cuda_l2_hint;
