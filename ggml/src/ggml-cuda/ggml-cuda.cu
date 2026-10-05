@@ -1852,6 +1852,11 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
         return false;
     }
 
+    // the dedicated PTQ1_0 path does not fuse the gate for several tokens per expert (MoE batches)
+    if (tensor->op == GGML_OP_MUL_MAT_ID && src0->type == GGML_TYPE_PTQ1_0 && dst->ne[2] > 1) {
+        return false;
+    }
+
     return use_mul_mat_vec_q;
 }
 
