@@ -542,7 +542,7 @@ static void mul_mat_vec_ptq1_0_pt_launch(
         ggml_cuda_batch_invariant(), pf_ptr, pf_lines_per_cta, pf_ctas)
 
     if (has_fusion) {
-        GGML_ASSERT(ncols == 1 && "fusion only supported for ncols_dst=1");
+        GGML_ASSERT(ncols <= 4 && "fusion only supported for ncols_dst <= 4");
         if (has_gate) {
             PTQ1_0_PT_LAUNCH(true, true);
         } else {
