@@ -4,6 +4,11 @@
 // Rename `_generic` functions if no native implementation is available.
 // This effectively selects the generic implementation.
 
+// PQ2_0 / PTQ1_0: only generic dot products exist so far (no arch variants), select them on every arch.
+#define ggml_vec_dot_pq2_0_q8_0_generic  ggml_vec_dot_pq2_0_q8_0
+#define ggml_vec_dot_pq2_0_q8_K_generic  ggml_vec_dot_pq2_0_q8_K
+#define ggml_vec_dot_ptq1_0_q8_0_generic ggml_vec_dot_ptq1_0_q8_0
+
 #if defined(GGML_CPU_GENERIC)
 // quants.c
 #define quantize_row_q8_0_generic quantize_row_q8_0
