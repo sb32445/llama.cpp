@@ -2463,6 +2463,15 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_TYPE_V"));
     add_opt(common_arg(
+        {"--kv-mean-center"}, "FNAME",
+        "path to a K-cache mean-centering bias file (GGUF)\n"
+        "subtracts a fixed per-(head,channel) bias from K before it is quantized into the cache;\n"
+        "requires --cache-type-k q4_0",
+        [](common_params & params, const std::string & value) {
+            params.kv_mean_center_path = value;
+        }
+    ).set_env("LLAMA_ARG_KV_MEAN_CENTER"));
+    add_opt(common_arg(
         {"--hellaswag"},
         "compute HellaSwag score over random tasks from datafile supplied with -f",
         [](common_params & params) {

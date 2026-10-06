@@ -594,6 +594,9 @@ struct common_params {
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V
 
     size_t moe_cache_size = 0; // GPU cache size in bytes for the MoE experts kept in the CPU
+    // path to a K-cache mean-centering bias file (GGUF), or empty to disable.
+    // only takes effect when cache_type_k == GGML_TYPE_Q4_0
+    std::string kv_mean_center_path = "";
 
     common_conversation_mode conversation_mode = COMMON_CONVERSATION_MODE_AUTO;
 

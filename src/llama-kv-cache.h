@@ -250,6 +250,23 @@ public:
     // note: used by n-gram input embeddings
     void get_prev_tokens(const llama_ubatch & ubatch, uint32_t n, std::vector<llama_token> & res) const;
 
+    //
+    // K-cache mean-centering (see docs/kv-mean-center.md)
+    //
+
+    // load a per-layer bias file (GGUF, tensors named "kv_bar.blk.<il>.k") and enable
+    // mean-centering for every layer it covers: the bias is subtracted from the K vector
+    // right before it is written into the cache in cpy_k().
+    //
+    // when require_q4_0 is true (the default, used by the --kv-mean-center CLI flag), loading
+    // fails for any layer whose K cache type is not GGML_TYPE_Q4_0, since that is the only case
+    // this feature is intended/validated for. require_q4_0 = false is used by tests to exercise
+    // the exact same subtraction code path against an unquantized (e.g. F32) K cache, in order to
+    // validate the softmax-invariance argument without confounding it with quantization error.
+    //
+    // returns false (and logs an error) on failure; the cache is left with centering disabled.
+    bool load_kv_mean_center(const char * path, bool require_q4_0 = true);
+
 private:
     const llama_model & model;
     const llama_hparams & hparams;
@@ -314,6 +331,15 @@ private:
 
     // pending stream copies that will be applied during the next update
     stream_copy_info sc_info;
+
+    // K-cache mean-centering bias (see load_kv_mean_center()):
+    //   k_bar[ikv] is indexed like `layers` and is nullptr for layers without a bias, or if
+    //   centering was never enabled (k_bar.empty() in that case).
+    //   each tensor is F32, shaped [n_embd_head_k(il), n_head_kv(il)] so it broadcasts against
+    //   the [n_embd_head, n_head, n_tokens] k_cur tensor seen in cpy_k().
+    std::vector<ggml_tensor *> k_bar;
+    std::vector<ggml_context_ptr> k_bar_ctxs;
+    std::vector<ggml_backend_buffer_ptr> k_bar_bufs;
 
     std::vector<kv_layer> layers;
 
