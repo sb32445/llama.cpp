@@ -12043,6 +12043,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
+    // PTQ1_0 prefill (MMQ) at the 27B projection shapes: gate/up, down, fused QKV, attention out
+    for (int n : {128, 384, 512}) {
+        for (auto mk : std::vector<std::pair<int, int>> { {17408, 5120}, {5120, 17408}, {12288, 5120}, {6144, 5120} }) {
+            test_cases.emplace_back(new test_mul_mat(GGML_TYPE_PTQ1_0, GGML_TYPE_F32, mk.first, n, mk.second, {1, 1}, {1, 1}));
+        }
+    }
+
     return test_cases;
 }
 #ifdef _MSC_VER
@@ -12073,6 +12080,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
         for (int kv : {1024, 8192, 32768}) {
             test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+        }
+    }
+
+    // PTQ1_0 prefill (MMQ) at the 27B projection shapes: gate/up, down, fused QKV, attention out
+    for (int n : {128, 256, 384, 512, 1024, 2048}) {
+        for (auto mk : std::vector<std::pair<int, int>> { {17408, 5120}, {5120, 17408}, {12288, 5120}, {6144, 5120} }) {
+            test_cases.emplace_back(new test_mul_mat(GGML_TYPE_PTQ1_0, GGML_TYPE_F32, mk.first, n, mk.second, {1, 1}, {1, 1}));
         }
     }
 
