@@ -140,6 +140,24 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
 
     GGML_ASSERT(n_embd_head == hparams.n_embd_head_k());
 
+    // one pass over the devices for the per-layer path choice (ggml_backend_dev_type is a full
+    // cudaGetDeviceProperties per call): only CUDA/ROCm/MUSA and CPU implement raw gates
+    for (const auto & ldev : model.devices) {
+        if (ldev.dev == nullptr) {
+            continue;
+        }
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(ldev.dev);
+        const char * reg_name = reg ? ggml_backend_reg_name(reg) : nullptr;
+        if (reg_name == nullptr) {
+            gdn_raw_gates_dev_ok = false;
+            break;
+        }
+        if (strcmp(reg_name, "CUDA") != 0 && strcmp(reg_name, "ROCm") != 0 &&
+            strcmp(reg_name, "MUSA") != 0 && strcmp(reg_name, "CPU") != 0) {
+            gdn_raw_gates_dev_ok = false;
+        }
+    }
+
     int sections[4];
     std::copy(std::begin(hparams.rope_sections), std::begin(hparams.rope_sections) + 4, sections);
 
@@ -372,6 +390,7 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
     ggml_tensor * beta = build_lora_mm(model.layers[il].ssm_beta, cur, model.layers[il].ssm_beta_s);
     beta = ggml_reshape_4d(ctx0, beta, 1, num_v_heads, n_seq_tokens, n_seqs);
     cb(beta, "beta", il);
+    ggml_tensor * beta_raw = beta;
 
     beta = ggml_sigmoid(ctx0, beta);
     cb(beta, "beta_sigmoid", il);
@@ -379,6 +398,20 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
     ggml_tensor * alpha = build_lora_mm(model.layers[il].ssm_alpha, cur, model.layers[il].ssm_alpha_s);
     alpha = ggml_reshape_3d(ctx0, alpha, num_v_heads, n_seq_tokens, n_seqs);
     cb(alpha, "alpha", il);
+
+    // the fused GDN op can apply sigmoid / softplus itself; hand it the raw projections. The activated
+    // nodes below stay in the graph only on the paths that still need them (unreachable nodes are not
+    // part of the graph that gets evaluated). Only where the fused op implements raw gates natively.
+    if (gdn_raw_gates_dev_ok &&
+        model.layers[il].ssm_dt && model.layers[il].ssm_dt->type == GGML_TYPE_F32 &&
+        model.layers[il].ssm_a  && model.layers[il].ssm_a->type  == GGML_TYPE_F32) {
+        gdn_raw_beta    = beta_raw;
+        gdn_raw_alpha   = ggml_reshape_4d(ctx0, alpha, 1, num_v_heads, n_seq_tokens, n_seqs);
+        gdn_raw_dt_bias = model.layers[il].ssm_dt;
+        gdn_raw_a       = model.layers[il].ssm_a;
+    } else {
+        gdn_raw_beta = gdn_raw_alpha = gdn_raw_dt_bias = gdn_raw_a = nullptr;
+    }
 
     ggml_tensor * alpha_biased   = ggml_add(ctx0, alpha, model.layers[il].ssm_dt);
     ggml_tensor * alpha_softplus = ggml_softplus(ctx0, alpha_biased);

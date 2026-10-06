@@ -36,6 +36,14 @@ struct llm_build_delta_net_base : public llm_graph_context {
 
     virtual ~llm_build_delta_net_base() = default;
 
+    // raw gate inputs for the fused GDN op of the layer being built: when all four are set the fused op
+    // gets the pre-activation projections and applies the activations itself
+    // (ggml_gated_delta_net_set_raw_gates); the non-fused paths keep the activated g / b
+    ggml_tensor * gdn_raw_beta    = nullptr;
+    ggml_tensor * gdn_raw_alpha   = nullptr;
+    ggml_tensor * gdn_raw_dt_bias = nullptr;
+    ggml_tensor * gdn_raw_a       = nullptr;
+
     // returns pair of output and new state
     std::pair<ggml_tensor *, ggml_tensor *> build_delta_net_chunking(
                 ggml_tensor * q,
@@ -2409,6 +2417,8 @@ struct llama_model_qwen35 : public llama_model_base {
                             int   il);
 
         const llama_model & model;
+
+        bool gdn_raw_gates_dev_ok = true; // every device is CPU/CUDA/ROCm/MUSA: fused GDN takes raw gates
     };
 
     struct graph_mtp : public llm_graph_context {

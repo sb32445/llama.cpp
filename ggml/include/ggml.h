@@ -2665,6 +2665,15 @@ extern "C" {
             struct ggml_tensor  * state,
             int64_t               K);
 
+    // fold the per-head gate activations into a gated_delta_net op (scalar gate only):
+    //   beta -> sigmoid(beta),  g -> a[h] * softplus(g + dt_bias[h])
+    // dt_bias and a are F32 with H_v elements; removes four elementwise ops per layer.
+    // Only the CPU and CUDA backends implement raw gates: do not use it with others.
+    GGML_API void ggml_gated_delta_net_set_raw_gates(
+            struct ggml_tensor  * gdn,
+            struct ggml_tensor  * dt_bias,
+            struct ggml_tensor  * a);
+
     // DSA lightning indexer
     //
     // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]
