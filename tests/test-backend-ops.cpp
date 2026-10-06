@@ -12076,6 +12076,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // the same 27B target shape with a q4_0 K/V cache (decode and MTP verify widths, long contexts)
+    for (int nb : {1, 2, 3, 4}) {
+        for (int kv : {8192, 32768, 119808}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0, GGML_TYPE_Q4_0));
+        }
+    }
+
     // PQ2_0 at speculative verify widths, at the 27B projection shapes and the vocab head
     for (int n : {1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 16, 17, 24, 32}) {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_PQ2_0, GGML_TYPE_F32, 17408, n, 5120, {1, 1}, {1, 1}));
