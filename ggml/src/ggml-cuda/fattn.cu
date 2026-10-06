@@ -656,7 +656,10 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
                 }
             } else {
                 if (cc >= GGML_CUDA_CC_ADA_LOVELACE) {
-                    if (Q->ne[1] <= 2) {
+                    // The vector kernel loses to the MMA kernel on Ada once the GQA ratio is above 4 (same rule as for F16 K/V
+                    // above), but only if the MMA kernel reads the quantized cache in place: converting the whole cache to F16
+                    // on every call costs more than the kernel gains.
+                    if (Q->ne[1] <= 2 && !(gqa_opt_applies && gqa_ratio > 4 && ggml_cuda_fattn_mma_kv_native_supported(dst))) {
                         return BEST_FATTN_KERNEL_VEC;
                     }
                 } else {
