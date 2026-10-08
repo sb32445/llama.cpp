@@ -12576,6 +12576,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
 
     // GATED_DELTA_NET: realistic model configurations
     // TG: n_seq_tokens=1 (autoregressive)
+    // Bonsai 2 27B shape (16 K heads, 3 V heads per K head, d=128, raw gates): decode, MTP verify and prefill widths
+    for (int nt : {1, 2, 3, 4, 6, 8, 12, 16, 32, 64, 512}) {
+        test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, nt, 1, 3, false, false, nt <= 4 ? 3 : 1, true));
+    }
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));   // Qwen3.5-like: 32 heads, d=128
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 64,  1, 1));   // smaller model
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1, 1, false, true)); // KDA

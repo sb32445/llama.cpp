@@ -194,7 +194,8 @@ gated_delta_net_cuda(const float * q,
     }
 }
 
-template <bool KDA, bool keep_rs_t, bool RAW>
+// CPW: state columns each warp owns, 4 only for the 128-wide state (see the call site)
+template <bool KDA, bool keep_rs_t, bool RAW, int CPW>
 static void launch_gated_delta_net(
         const float * q_d, const float * k_d, const float * v_d,
         const float * g_d, const float * b_d, const float * rb_d, const float * ra_d, const float * s_d,
@@ -208,10 +209,9 @@ static void launch_gated_delta_net(
         const int32_t * s_ids, int64_t s_row_stride, cudaStream_t stream) {
     //TODO: Add chunked kernel for even faster pre-fill
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
-    // four columns per warp (see the kernel); shrink the CTA when the wider CTA would leave
-    // SMs without a CTA, so small head counts keep the device filled
+    // shrink the CTA when the wider CTA would leave SMs without a CTA, so small head counts keep the device filled
     const int nsm = ggml_cuda_info().devices[ggml_cuda_get_device()].nsm;
-    const int cols_per_warp = gdn_cols_per_warp;
+    const int cols_per_warp = S_v == 128 ? CPW : 1; // wide columns only exist for the 128-wide state
     int num_warps = 4;
     while (num_warps > 1 && H*n_seqs*(S_v / (cols_per_warp * num_warps)) < nsm) {
         num_warps /= 2;
@@ -226,26 +226,26 @@ static void launch_gated_delta_net(
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(grid_dims, block_dims, 0, stream);
     switch (S_v) {
         case 16:
-            ggml_cuda_kernel_launch(gated_delta_net_cuda<16, KDA, keep_rs_t, RAW>, launch_params,
+            ggml_cuda_kernel_launch(gated_delta_net_cuda<16, KDA, keep_rs_t, RAW, 1>, launch_params,
                 q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, s_ids, s_row_stride);
             break;
         case 32:
-            ggml_cuda_kernel_launch(gated_delta_net_cuda<32, KDA, keep_rs_t, RAW>, launch_params,
+            ggml_cuda_kernel_launch(gated_delta_net_cuda<32, KDA, keep_rs_t, RAW, 1>, launch_params,
                 q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, s_ids, s_row_stride);
             break;
         case 64: {
-            ggml_cuda_kernel_launch(gated_delta_net_cuda<64, KDA, keep_rs_t, RAW>, launch_params,
+            ggml_cuda_kernel_launch(gated_delta_net_cuda<64, KDA, keep_rs_t, RAW, 1>, launch_params,
                 q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, s_ids, s_row_stride);
             break;
         }
         case 128: {
-            ggml_cuda_kernel_launch(gated_delta_net_cuda<128, KDA, keep_rs_t, RAW>, launch_params,
+            ggml_cuda_kernel_launch(gated_delta_net_cuda<128, KDA, keep_rs_t, RAW, CPW>, launch_params,
                 q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K, s_ids, s_row_stride);
@@ -349,24 +349,32 @@ static void ggml_cuda_op_gated_delta_net_impl(
 
     if (kda) {
         if (keep_rs) {
-            launch_gated_delta_net<true, true, false>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d,
+            launch_gated_delta_net<true, true, false, 1>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, s_ids, s_row_stride, stream);
         } else {
-            launch_gated_delta_net<true, false, false>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d,
+            launch_gated_delta_net<true, false, false, 1>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d,
                 S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, s_ids, s_row_stride, stream);
         }
     } else {
-#define GDN_LAUNCH(KEEP, RAW_)                                                                                         \
-        launch_gated_delta_net<false, KEEP, RAW_>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d,            \
+// four state columns per warp share the q/k register loads: fewer loads per token for long prompts, but a
+// 4x smaller grid, which is slower for decode. So they are used from 4 tokens on (not for decode and the
+// 3-token MTP verify), only for the 128-wide scalar-gate state and on Ampere or newer.
+        constexpr int64_t wide_min_tokens = 4;
+        const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+        const bool wide = S_v == 128 && n_tokens >= wide_min_tokens && GGML_CUDA_CC_IS_NVIDIA(cc) && cc >= GGML_CUDA_CC_AMPERE;
+#define GDN_LAUNCH(KEEP, RAW_, CPW_)                                                                                   \
+        launch_gated_delta_net<false, KEEP, RAW_, CPW_>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d,      \
             S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,                                                    \
             sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, s_ids, s_row_stride, stream)
+#define GDN_LAUNCH_W(KEEP, RAW_) if (wide) { GDN_LAUNCH(KEEP, RAW_, 4); } else { GDN_LAUNCH(KEEP, RAW_, 1); }
         if (keep_rs) {
-            if (raw) { GDN_LAUNCH(true, true); } else { GDN_LAUNCH(true, false); }
+            if (raw) { GDN_LAUNCH_W(true, true) } else { GDN_LAUNCH_W(true, false) }
         } else {
-            if (raw) { GDN_LAUNCH(false, true); } else { GDN_LAUNCH(false, false); }
+            if (raw) { GDN_LAUNCH_W(false, true) } else { GDN_LAUNCH_W(false, false) }
         }
+#undef GDN_LAUNCH_W
 #undef GDN_LAUNCH
     }
 }
