@@ -1,5 +1,8 @@
 # llama.cpp
 
+> **Branch `prism-addon`:** ggml-org/llama.cpp master plus ternary Bonsai (`PTQ1_0`) support for the RTX 4070.
+> Experimental, supports only the RTX 4070 and `PTQ1_0`. See [docs/prism-addon/README.md](docs/prism-addon/README.md).
+
 ![llama](https://raw.githubusercontent.com/ggml-org/llama.brand/refs/heads/master/cover/llama-cpp/cover-llama-cpp-dark.svg)
 
 <div align="center">
