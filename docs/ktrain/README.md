@@ -16,17 +16,17 @@ Base: `prism` at `2459f68b5` (measured on `88c4bc60b`; the commits in between do
 | # | Branch | What | Measured effect (RTX 4070) | Measurement switch (first commit of the branch only) |
 |---|---|---|---|---|
 | 0001 | `pr/pq2_0-multicol` | PQ2_0 mat-vec kernel for 3-8 columns (raw 2-bit codes into `dp4a` with an integer correction) | 4 columns 105.6 -> 54.0 us, 8 columns 136.8 -> 78.1 us (m=5120, k=17408); +17 % / +25 % / +29 % decode with 4 / 6 / 8 parallel sequences | `GGML_CUDA_PQ2_MULTICOL=0` |
-| 0002 | `pr/fattn-gqa-mma` | MMA flash attention for GQA > 4 with quantized K/V (instead of the vector kernel) | 120k context, no MTP: 25.3 -> 41.2 tok/s | `GGML_CUDA_FATTN_GQA_MMA=0`, `GGML_CUDA_FATTN_VEC_MAXQ` |
+| 0002 | `pr/fattn-gqa-mma` | MMA flash attention for GQA > 4 with quantized K/V (instead of the vector kernel), only when MMA can read that K/V type in place | 120k context, no MTP: 25.3 -> 41.2 tok/s | `GGML_CUDA_FATTN_GQA_MMA=0`, `GGML_CUDA_FATTN_VEC_MAXQ` |
 | 0003 | `pr/fattn-mma-tile` | smaller KV tile (`nbatch_fa` 32) for the 8-column MMA config, head size 256 | 120k context, no MTP: 41.2 -> 46.0 tok/s (+12 %); no effect with MTP | - |
 | 0004 | `pr/concat-transpose-all-gpus` | transposing concat kernel (was GB10-only) on all GPUs | 8.8 -> 2.5 us per call; +1.2 % decode with MTP (n-max 2) | `GGML_CUDA_CONCAT_TRANSPOSE=0` |
-| 0005 | `pr/ptq1-gate-up-fuse-mc` (1/2) | gate + up + SwiGLU fused PTQ1_0 mat-vec for 2-4 columns (speculative verify steps) | +1.01 % decode | `GGML_CUDA_PTQ1_FUSE_MC=0` |
+| 0005 | `pr/ptq1-gate-up-fuse-mc` (1/2) | gate + up + SwiGLU fused PTQ1_0 mat-vec for 2-4 columns (speculative verify steps; needs a contiguous bias, covered by new test-backend-ops cases) | +1.01 % decode | `GGML_CUDA_PTQ1_FUSE_MC=0` |
 | 0006 | `pr/ptq1-gate-up-fuse-mc` (2/2) | keep that fusion when the GLU output overlaps the q8 rows (pool block) | +0.33 % (0005 + 0006: +1.28 %) | `GGML_CUDA_FWHT_GLU_POOL=0` |
 | 0007 | `pr/kv-seq-rm-bound` | `llama_kv_cache::seq_rm` only over the used cell range | +0.77 % at 114688 context | - |
 | 0008 | `pr/server-ckpt-buffer-reuse` | server: reuse the buffers of evicted prompt checkpoints (no zero-fill of ~150 MiB each) | -20 ms per turn (646 -> 626 ms) in a growing multi-turn conversation; decode speed unchanged | `LLAMA_CKPT_REUSE=0` |
 | 0009 | `pr/sampler-topk-from-logits` | take the top-k straight from the logits when top-k starts the sampler chain (same heap steps as `std::partial_sort`, same order for equal logits) | +1.9 % (greedy benchmark), +1.85 % (thinking sampling 1.0 / 0.95 / 20 / 0.05, reasoning budget) | `LLAMA_SAMPLER_FAST_TOPK=0` |
-| 0010 | `pr/ptq1-l2-prefetch` | the last 46 CTAs of a PTQ1_0 mat-vec prefetch 50 % (max 16 MiB) of the next mat-vec's weights into L2 | +2.0 % (greedy), +2.1 % (Hermes-like setup), +1.7 to +2.2 % at depth 0 to 65k | `GGML_CUDA_L2_PREFETCH_PCT=0` (also `_CTAS`, `_MAX_KB`) |
+| 0010 | `pr/ptq1-l2-prefetch` | the last 46 CTAs of a PTQ1_0 mat-vec prefetch 50 % (capped at 8 MiB on Ada, 2 MiB elsewhere) of the next mat-vec's weights into L2 | +2.0 % (greedy), +2.1 % (Hermes-like setup), +1.7 to +2.2 % at depth 0 to 65k | `GGML_CUDA_L2_PREFETCH_PCT=0` (also `_CTAS`, `_MAX_KB`) |
 
-The switches exist only in the first commit(s) of each branch; the last commit of the branch removes them (for 0010 it fixes `_PCT`, `_CTAS` and `_MAX_KB` to the measured 50 % / 46 / 16 MiB).
+The switches exist only in the first commit(s) of each branch; the last commit of the branch removes them (for 0010 it fixes `_PCT` and `_CTAS` to 50 % / 46 and the cap to 8 MiB on Ada, 2 MiB elsewhere; the gains in the table were measured with the earlier 16 MiB cap on the PR branch).
 
 All 10 together against the stack without 0008-0010 (`patched-fb`): **+2.83 %** (Hermes-like setup: 114688 context, thinking sampling, reasoning budget 16384, MTP n-max 2, q4_0 K/V),
 +3.2 % on the greedy benchmark. The gains of 0009 and 0010 overlap and do not add up fully.
