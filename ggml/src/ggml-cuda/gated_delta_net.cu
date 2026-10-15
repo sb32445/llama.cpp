@@ -389,7 +389,9 @@ static void ggml_cuda_op_gated_delta_net_impl(
         state_slot_stride = cache->slot_stride;
     }
 
-    {
+    // the MMA kernel reads g/beta as activated values and the state from src[5]: it knows neither the raw
+    // gates nor the state gather folded into this op, so those take the kernels below
+    if (!raw && gather == nullptr) {
         ggml_cuda_gdn_mma_args args = ggml_cuda_gdn_mma_args_from_tensor(dst);
         args.state_out = state_d;
         if (ggml_cuda_gdn_mma_launch(ctx.device, args, stream)) {
