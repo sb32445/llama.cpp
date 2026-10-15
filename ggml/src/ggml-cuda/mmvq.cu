@@ -1602,8 +1602,11 @@ bool ggml_cuda_mmvq_ptq1_0_can_fuse_mc(const ggml_tensor * src0, const int ncols
         src0->ne[0] % QK_PTQ1_0 != 0 || !ptq1_0_pt_enabled()) {
         return false;
     }
-    const size_t smem = ptq1_0_pt_smem_bytes((int) (src0->ne[0] / QK_PTQ1_0), ncols_dst, (int) src0->ne[1], true);
-    return smem <= ggml_cuda_info().devices[ggml_cuda_get_device()].smpb;
+    const int device = ggml_cuda_get_device();
+    // the launcher picks the rows per work item from the compute capability: use the same rule
+    const int rows_per_item = ptq1_0_pt_rows_per_item_for_cc(ncols_dst, ggml_cuda_info().devices[device].cc);
+    const size_t smem = ptq1_0_pt_smem_bytes((int) (src0->ne[0] / QK_PTQ1_0), ncols_dst, (int) src0->ne[1], rows_per_item, true);
+    return smem <= ggml_cuda_info().devices[device].smpb;
 #endif
 }
 
