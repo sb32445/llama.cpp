@@ -1,14 +1,14 @@
 # kTrain: decode-speed patches for RTX 4070 on top of PrismML `prism`
 
-This fork (branch `ktrain`) is PrismML's `prism` (`8b0c19c8c`) plus six open pull requests that speed up decoding of the ternary Bonsai 2 27B models (PTQ1_0 / PQ2_0, with an MTP draft head) on NVIDIA Ada (RTX 4070, cc 8.9). They are offered to PrismML as separate pull requests; this branch merges all of them for people who do not want to wait for the merges. Every patch is also a branch of its own off `prism` (`pr/*`).
+This fork (branch `ktrain`) is PrismML's `prism` (`e3de71522`, 2026-10-13) plus five open pull requests (#307 to #310 and #314) that speed up decoding of the ternary Bonsai 2 27B models (PTQ1_0 / PQ2_0, with an MTP draft head) on NVIDIA Ada (RTX 4070, cc 8.9). They are offered to PrismML as separate pull requests; this branch merges all of them for people who do not want to wait for the merges. Every open patch is also a branch of its own off `prism` (`pr/*`). #306 and #311 to #313 are already part of `prism`.
 
-**Speed against `prism`** (`2459f68b5`, RTX 4070 12 GB, Ternary-Bonsai-2-27B PTQ1_0 + MTP head, q4_0 K/V, greedy, same build settings):
+**Speed against `prism`** (`2459f68b5`, measured with all nine patches; #306 and #311 to #313 have been merged into `prism` since, so the gain of the five open pull requests against the current `prism` is smaller and has not been re-measured; RTX 4070 12 GB, Ternary-Bonsai-2-27B PTQ1_0 + MTP head, q4_0 K/V, greedy, same build settings):
 - Agent setup (MTP `n-max 2`, context 114688): 104.2 -> 110.6 tok/s, **+5.9 %** (95 % CI [+5.7, +6.1] %, 8 interleaved pairs, outputs identical).
 - 120k tokens of filled context, no MTP: 25.5 -> 46.9 tok/s, **+84 %** (two runs per build).
 
 | PR | Branch | What | Effect on the RTX 4070 |
 |---|---|---|---|
-| [#306](https://github.com/PrismML-Eng/llama.cpp/pull/306) | `pr/pq2_0-multicol` | PQ2_0 mat-vec kernel for 3-8 columns | +17 / +25 / +29 % decode with 4 / 6 / 8 parallel sequences |
+| [#306](https://github.com/PrismML-Eng/llama.cpp/pull/306) (merged into `prism`) | `pr/pq2_0-multicol` | PQ2_0 mat-vec kernel for 3-8 columns | +17 / +25 / +29 % decode with 4 / 6 / 8 parallel sequences |
 | [#307](https://github.com/PrismML-Eng/llama.cpp/pull/307) | `pr/fattn-gqa-mma` | MMA flash attention for GQA > 4 with quantized K/V | 120k context, no MTP: 25.3 -> 41.2 tok/s |
 | [#308](https://github.com/PrismML-Eng/llama.cpp/pull/308) | `pr/fattn-mma-tile` | smaller KV tile for the 8-column MMA config (head size 256) | 120k context, no MTP: 41.2 -> 46.0 tok/s (with #307) |
 | [#309](https://github.com/PrismML-Eng/llama.cpp/pull/309) | `pr/concat-transpose-all-gpus` | transposing concat kernel on all GPUs | +1.2 % decode with MTP |
@@ -18,7 +18,7 @@ This fork (branch `ktrain`) is PrismML's `prism` (`8b0c19c8c`) plus six open pul
 | [#313](https://github.com/PrismML-Eng/llama.cpp/pull/313) (merged into `prism`) | `pr/sampler-topk-from-logits` | top-k straight from the logits | +1.9 % decode with MTP |
 | [#314](https://github.com/PrismML-Eng/llama.cpp/pull/314) | `pr/ptq1-l2-prefetch` | prefetch the next PTQ1_0 mat-vec's weights into L2 | +2.0 % decode with MTP |
 
-#306, #307 and #308 change the arithmetic order, so results differ at rounding level; the other six give identical outputs (#311 to #313 are already part of `prism`). Everything was measured on one GPU and one model family only; other hardware is untested. Details, measurement method and limits: [docs/ktrain/README.md](docs/ktrain/README.md).
+#306, #307 and #308 change the arithmetic order, so results differ at rounding level; the other six give identical outputs (#306 and #311 to #313 are already part of `prism`). Everything was measured on one GPU and one model family only; other hardware is untested. Details, measurement method and limits: [docs/ktrain/README.md](docs/ktrain/README.md).
 
 **MTP version of the PTQ1_0 model:** [docs/ktrain/mtp/README.md](docs/ktrain/mtp/README.md) shows how to build `Ternary-Bonsai-2-27B-PTQ1_0-MTP-Q8_0.gguf` from the two published files.
 
