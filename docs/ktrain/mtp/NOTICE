@@ -1,0 +1,12 @@
+This recipe is an unofficial community tool. It is not a release of Prism ML, Qwen or ProCreations.
+
+Scripts in this repository: Apache License 2.0 (see LICENSE).
+
+The recipe combines two third-party files that are NOT included here:
+- Ternary-Bonsai-2-27B-PTQ1_0.gguf: Bonsai 2 27B by Prism ML (Apache 2.0), https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf
+  Prism ML asks for the attribution "Created using Bonsai by Prism ML." when redistributing.
+- Ternary-Bonsai-2-27B-PQ2_0-MTP-Q8_0.gguf: adapted MTP head by ProCreations (Apache 2.0), https://huggingface.co/ProCreations/Ternary-Bonsai-2-27B-MTP
+Both are built from Qwen3.8-27B, Copyright 2026 Alibaba Cloud (Apache 2.0), https://huggingface.co/Qwen/Qwen3.8-27B
+
+The output file of the script is a derived work of these files. Anyone who publishes it must keep their notices and state the change
+(15 head tensors blk.64.* added, block_count 64 -> 65, nextn_predict_layers 1, general.name changed).
