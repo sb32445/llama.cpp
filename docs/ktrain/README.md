@@ -22,6 +22,16 @@ The pull-request branches `pr/ptq1-gate-up-fuse-mc` and `pr/ptq1-l2-prefetch` ca
 | flash attention, GQA ratio 6 | prompt batches (>= 64 query tokens) use `ncols2 = 2` instead of 8, which removes 25 % padding in the MMA tiles; decode and MTP verify keep 8 | with the next commit: `llama-bench` pp2048 (`-ub 512`) +10.3 % at depth 32768 and +17.1 % at 98304 |
 | PTQ1_0 MMQ scale | the block scale is applied once per 128 weights instead of per 32-wide MMA step | +3.9 % pp2048 at depth 0 (both commits) |
 
+Prefill speed without a server (`llama-bench`, pp2048, `-ub 512`, q4_0 K/V, 2 repetitions, run order A B B A, both commits together; `ktrain` without them against with them):
+
+| Context depth | without ↑ | with ↑ | change |
+|---|---|---|---|
+| 0 | 1368.1 tok/s | 1422.0 tok/s | +3.9 % |
+| 32768 | 963.9 tok/s | 1063.6 tok/s | +10.3 % |
+| 98304 | 577.7 tok/s | 676.3 tok/s | +17.1 % |
+
+↑ more is better. The gain at depth 0 matches the MMQ scale commit; the growth with depth matches the attention commit (this split is an inference, the two commits were measured together only).
+
 In `llama-server` the prefill of 114688 tokens takes 139.9 s instead of 157.7 s (-11.3 %); -5.9 % at 2048, -7.7 % at 32768, -8.9 % at 65536. These two commits are **not bit-identical** to `prism`: perplexity 14.5129 / 12.7715 against 14.5316 / 12.7576 (within the error of 0.62 / 0.38), and the generated text of a greedy run changes, which moves the MTP acceptance in either direction (4 prompts: 74.0 -> 72.0 %, decode -0.84 %; one code question per depth: -1.7 % to +3.2 %). They are measured on the GPU above only; the decode kernels are unchanged.
 
 **Numerics of the two open patches:** both leave the results unchanged (perplexity and all generated texts are bit-identical to `prism` `c96baf4ab`, at every depth tested).
