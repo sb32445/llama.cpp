@@ -1,3 +1,15 @@
+# kTrain: decode-speed patches for RTX 4070 on top of PrismML `prism`
+
+This fork (branch `ktrain`) is PrismML's `prism` (`c96baf4ab`, 2026-10-27) plus two open pull requests that speed up decoding of the ternary Bonsai 2 27B models (PTQ1_0 / PQ2_0, with an MTP draft head) on NVIDIA Ada (RTX 4070, cc 8.9): [#310](https://github.com/PrismML-Eng/llama.cpp/pull/310) (gate + up + SwiGLU fused PTQ1_0 mat-vec for 2-4 columns) and [#314](https://github.com/PrismML-Eng/llama.cpp/pull/314) (L2 prefetch of the next mat-vec's weights). In addition the branch carries two prefill patches that are not submitted (flash attention at GQA ratio 6, PTQ1_0 MMQ scale; prefill of 114688 tokens -11.3 %, not bit-identical). The earlier patches of this stack (#306 to #309 and #311 to #313) are already part of `prism`.
+
+**Speed against `prism`** (RTX 4070 12 GB, Ternary-Bonsai-2-27B PTQ1_0 + MTP head, MTP `n-max 2`, q4_0 K/V, greedy, 2026-10-27, same build settings): **+2.0 %** decode at depth 0 (116.49 -> 118.80 tok/s, 95 % CI [+1.97, +2.03] %, 8 interleaved pairs) and +1.2 % at 114688 tokens of context. For these two pull requests perplexity and all outputs are bit-identical to `prism` (the two prefill patches are not). Everything was measured on one GPU and one model family only; other hardware is untested. Details, measurement method and limits: [docs/ktrain/README.md](docs/ktrain/README.md).
+
+**MTP version of the PTQ1_0 model:** [docs/ktrain/mtp/README.md](docs/ktrain/mtp/README.md) shows how to build `Ternary-Bonsai-2-27B-PTQ1_0-MTP-Q8_0.gguf` from the two published files.
+
+**AI assistance:** the patches were developed with Claude Code; see [docs/ktrain/README.md](docs/ktrain/README.md#ai-assistance).
+
+---
+
 # llama.cpp
 
 > [!IMPORTANT]
