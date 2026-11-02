@@ -5704,6 +5704,38 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
         }
     }
 
+    // SWIGLU (separate gate and up) + Hadamard sign flip + reshape + FWHT-hint matmul: the FFN down input of a
+    // Hadamard-folded model. One launch reads gate and up and writes the transformed rows; bit-identical to the four nodes.
+    if (node->op == GGML_OP_GLU && ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_GLU, GGML_OP_MUL, GGML_OP_RESHAPE, GGML_OP_MUL_MAT }, { i + 3 })) {
+        const ggml_tensor * glu     = node;
+        const ggml_tensor * mul     = cgraph->nodes[i + 1];
+        const ggml_tensor * reshape = cgraph->nodes[i + 2];
+        ggml_tensor *       mm      = cgraph->nodes[i + 3];
+        const ggml_tensor * signs   = mul->src[1];
+
+        const bool pattern_ok = ggml_get_glu_op(glu) == GGML_GLU_OP_SWIGLU && !ggml_get_op_params_i32(glu, 1) &&
+            glu->src[1] != nullptr && mul->src[0] == glu && ggml_get_op_params_i32(mm, 1) == GGML_HINT_SRC0_IS_HADAMARD &&
+            mm->src[1] == reshape && reshape->src[0] == mul && glu->type == GGML_TYPE_F32 && mul->type == GGML_TYPE_F32 &&
+            signs->ne[1] == 1 && signs->ne[2] == 1 && signs->ne[3] == 1 && signs->ne[0] == glu->ne[0] &&
+            signs->ne[0] % mm->src[0]->ne[0] == 0 && ggml_is_contiguous(glu) &&
+            glu->ne[1] > MMVQ_MAX_BATCH_SIZE; // decode and verify batches keep ggml_cuda_try_fwht_q8 (FWHT + q8_1 for the mat-vec)
+        // The kernel reads a whole transform (N consecutive floats of gate and up) before it writes it, so the output may sit exactly
+        // on top of gate or up (the allocator reuses the gate buffer; the shapes differ, so the generic alias check rejects it).
+        // Any other overlap with gate, up or the signs is refused.
+        auto overlaps = [&](const ggml_tensor * a, const ggml_tensor * b, bool exact_ok) {
+            const char * a0 = (const char *) a->data; const char * a1 = a0 + ggml_nbytes(a);
+            const char * b0 = (const char *) b->data; const char * b1 = b0 + ggml_nbytes(b);
+            if (a1 <= b0 || b1 <= a0) {
+                return false;
+            }
+            return !(exact_ok && a0 == b0 && a1 == b1);
+        };
+        const bool mem_ok = pattern_ok && !overlaps(mm, glu->src[0], true) && !overlaps(mm, glu->src[1], true) && !overlaps(mm, signs, false);
+        if (mem_ok && ggml_cuda_op_swiglu_fwht_signed(*cuda_ctx, glu->src[0], glu->src[1], signs, mm)) {
+            return 3;
+        }
+    }
+
     // Hadamard sign flip + reshape + FWHT-hint matmul: multiply the sign
     // vector during the transform's load instead of a separate full pass
     if (ggml_can_fuse_subgraph(cgraph, i, { GGML_OP_MUL, GGML_OP_RESHAPE, GGML_OP_MUL_MAT }, { i + 2 })) {

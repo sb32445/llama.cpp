@@ -12334,6 +12334,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_fwht_signed(1024, 17408, 1,   GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(1024, 17408, 8,   GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(1024, 17408, 512, GGML_TYPE_F32, true));
+    // prompt batches (more than 8 tokens) take the fused SwiGLU + sign flip + transform launch on CUDA
+    test_cases.emplace_back(new test_fwht_signed(1024, 17408, 9,   GGML_TYPE_F32, true));
+    test_cases.emplace_back(new test_fwht_signed(1024, 17408, 33,  GGML_TYPE_F32, true));
+    test_cases.emplace_back(new test_fwht_signed(1024, 5120,  64,  GGML_TYPE_F32, true));
+    test_cases.emplace_back(new test_fwht_signed(512,  6144,  17,  GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(128,  1024,  5,   GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(2048, 8192,  3,   GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(1024, 5120,  4,   GGML_TYPE_F16, true));
