@@ -6107,14 +6107,18 @@ struct test_fwht_signed : public test_case {
     const int64_t n_tokens;
     const ggml_type type_x;
     const bool swiglu; // x is the SwiGLU of a gate and an up projection (the ffn_down input)
+    const ggml_type type_w; // != COUNT: the transform feeds a mat-mul with a weight of this type (the ffn_down; the CUDA backend quantizes the rows in the same launch)
 
     test_fwht_signed(int64_t blk = 1024, int64_t width = 5120, int64_t n_tokens = 7,
-                     ggml_type type_x = GGML_TYPE_F32, bool swiglu = false)
-        : blk(blk), width(width), n_tokens(n_tokens), type_x(type_x), swiglu(swiglu) {}
+                     ggml_type type_x = GGML_TYPE_F32, bool swiglu = false, ggml_type type_w = GGML_TYPE_COUNT)
+        : blk(blk), width(width), n_tokens(n_tokens), type_x(type_x), swiglu(swiglu), type_w(type_w) {}
 
     std::string vars() override {
-        return VARS_TO_STR5(blk, width, n_tokens, type_x, swiglu);
+        return type_w == GGML_TYPE_COUNT ? VARS_TO_STR5(blk, width, n_tokens, type_x, swiglu)
+                                         : std::string(VARS_TO_STR5(blk, width, n_tokens, type_x, swiglu)) + "," + VAR_TO_STR(type_w);
     }
+
+    double max_nmse_err() override { return type_w == GGML_TYPE_COUNT ? 1e-7 : 5e-4; }
 
     std::string op_desc(ggml_tensor * t) override {
         GGML_UNUSED(t);
@@ -6146,6 +6150,12 @@ struct test_fwht_signed : public test_case {
         cur = ggml_reshape_2d(ctx, cur, blk, width / blk * n_tokens);
         ggml_tensor * out = ggml_mul_mat(ctx, a, cur);
         ggml_mul_mat_set_hint(out, GGML_HINT_SRC0_IS_HADAMARD);
+        if (type_w != GGML_TYPE_COUNT) {
+            out = ggml_reshape_2d(ctx, out, width, n_tokens);
+            ggml_tensor * w = ggml_new_tensor_2d(ctx, type_w, width, 96);
+            ggml_set_name(w, "w_down");
+            out = ggml_mul_mat(ctx, w, out);
+        }
         ggml_set_name(out, "out");
         return out;
     }
@@ -12339,6 +12349,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_fwht_signed(1024, 17408, 33,  GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(1024, 5120,  64,  GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(512,  6144,  17,  GGML_TYPE_F32, true));
+    // ... and the MMQ activation quantization of a PTQ1_0 ffn_down in the same launch
+    test_cases.emplace_back(new test_fwht_signed(1024, 17408, 9,   GGML_TYPE_F32, true, GGML_TYPE_PTQ1_0));
+    test_cases.emplace_back(new test_fwht_signed(1024, 17408, 33,  GGML_TYPE_F32, true, GGML_TYPE_PTQ1_0));
+    test_cases.emplace_back(new test_fwht_signed(1024, 17408, 512, GGML_TYPE_F32, true, GGML_TYPE_PTQ1_0));
+    test_cases.emplace_back(new test_fwht_signed(1024, 5120,  64,  GGML_TYPE_F32, true, GGML_TYPE_PTQ1_0));
+    test_cases.emplace_back(new test_fwht_signed(512,  6144,  17,  GGML_TYPE_F32, true, GGML_TYPE_PTQ1_0));
     test_cases.emplace_back(new test_fwht_signed(128,  1024,  5,   GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(2048, 8192,  3,   GGML_TYPE_F32, true));
     test_cases.emplace_back(new test_fwht_signed(1024, 5120,  4,   GGML_TYPE_F16, true));
