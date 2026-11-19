@@ -614,6 +614,106 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile_q(
     }
 }
 
+// After Cary Palmer's bonsai-ada-surgery patch 72 (without the q3_0 part, adapted to the swizzled loader): the two halves of
+// flash_attn_ext_f16_load_tile_q for a full row tile (e0 = 0, ne elements). fetch reads the words of each thread's block
+// pairs into registers, store dequantizes them into the F16 shared tile. Between the two calls the loads stay in
+// flight, so other work (K*Q, softmax) can hide their latency.
+// 32-bit words in one block pair (64 weights) of a q4_0 / q8_0 K or V cache.
+template<ggml_type type_KV>
+static constexpr __host__ __device__ int flash_attn_ext_f16_pair_words() {
+    return type_KV == GGML_TYPE_Q4_0 ? 9 : 17;
+}
+
+// Dequantizes one block pair, read as aligned words w, into 32 half2 at dst.
+template<ggml_type type_KV>
+static __device__ __forceinline__ void flash_attn_ext_f16_store_pair_q(half2 * const __restrict__ dst, const uint32_t * const w) {
+    constexpr int bs = 32;
+    if constexpr (type_KV == GGML_TYPE_Q4_0) {
+        // block 0: d = bytes 0-1, qs = bytes 2-17. block 1: d = bytes 18-19, qs = bytes 20-35 (= w5..w8).
+        const float d0 = __half2float(__ushort_as_half((unsigned short) (w[0] & 0xFFFF)));
+        const float d1 = __half2float(__ushort_as_half((unsigned short) (w[4] >> 16)));
+        flash_attn_ext_f16_store_q4_0_block(dst, d0,
+            __byte_perm(w[0], w[1], 0x5432), __byte_perm(w[1], w[2], 0x5432),
+            __byte_perm(w[2], w[3], 0x5432), __byte_perm(w[3], w[4], 0x5432));
+        flash_attn_ext_f16_store_q4_0_block(dst + bs/2, d1, w[5], w[6], w[7], w[8]);
+    } else {
+        // block 0: d = bytes 0-1, qs = bytes 2-33. block 1: d = bytes 34-35, qs = bytes 36-67 (= w9..w16).
+        const float d0 = __half2float(__ushort_as_half((unsigned short) (w[0] & 0xFFFF)));
+        const float d1 = __half2float(__ushort_as_half((unsigned short) (w[8] >> 16)));
+        uint32_t q0[8];
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            q0[k] = __byte_perm(w[k], w[k + 1], 0x5432);
+        }
+        flash_attn_ext_f16_store_q8_0_block(dst,        d0, q0);
+        flash_attn_ext_f16_store_q8_0_block(dst + bs/2, d1, w + 9);
+    }
+}
+
+template<ggml_type type_KV, int nwarps, int nbatch_fa, int ne>
+static constexpr __device__ int flash_attn_ext_f16_pair_slots() {
+    constexpr int nthreads = nwarps*ggml_cuda_get_physical_warp_size();
+    return (nbatch_fa*(ne/64) + nthreads - 1) / nthreads;
+}
+
+template<ggml_type type_KV, int nwarps, int nbatch_fa, int ne, bool oob_check, int ns, int nw>
+static __device__ __forceinline__ void flash_attn_ext_f16_fetch_tile_q(
+        const char * const __restrict__ KV, uint32_t (&w)[ns][nw], const int stride_KV, const int i_sup) {
+    constexpr int warp_size     = ggml_cuda_get_physical_warp_size();
+    constexpr int nthreads      = nwarps*warp_size;
+    constexpr int ts            = type_KV == GGML_TYPE_Q4_0 ? 18 : 34;
+    constexpr int pairs_per_row = ne/64;
+    constexpr int ntotal        = nbatch_fa*pairs_per_row;
+    static_assert(nw == flash_attn_ext_f16_pair_words<type_KV>(), "bad word count");
+#pragma unroll
+    for (int s = 0; s < ns; ++s) {
+        const int t = s*nthreads + threadIdx.y*warp_size + threadIdx.x;
+        const int i = t / pairs_per_row;
+        const int p = t - i*pairs_per_row;
+        if ((ntotal % nthreads != 0 && t >= ntotal) || (oob_check && i >= i_sup)) {
+            continue;
+        }
+        const uint32_t * src = (const uint32_t *) (KV + int64_t(i)*stride_KV + 2*p*ts);
+#pragma unroll
+        for (int k = 0; k < nw; ++k) {
+            w[s][k] = __ldg(src + k);
+        }
+    }
+}
+
+template<ggml_type type_KV, int stride_tile, int nwarps, int nbatch_fa, int ne, bool oob_check, int ns, int nw>
+static __device__ __forceinline__ void flash_attn_ext_f16_store_tile_q(
+        half2 * const __restrict__ tile_KV, const uint32_t (&w)[ns][nw], const int i_sup) {
+    constexpr int warp_size     = ggml_cuda_get_physical_warp_size();
+    constexpr int nthreads      = nwarps*warp_size;
+    constexpr int pairs_per_row = ne/64;
+    constexpr int ntotal        = nbatch_fa*pairs_per_row;
+    constexpr int bs            = 32;
+    constexpr int h2_per_chunk  = 16/sizeof(half2);
+#pragma unroll
+    for (int s = 0; s < ns; ++s) {
+        const int t = s*nthreads + threadIdx.y*warp_size + threadIdx.x;
+        const int i = t / pairs_per_row;
+        const int p = t - i*pairs_per_row;
+        if (ntotal % nthreads != 0 && t >= ntotal) {
+            continue;
+        }
+        half2 buf[bs];
+        if (oob_check && i >= i_sup) {
+#pragma unroll
+            for (int k = 0; k < bs; ++k) {
+                buf[k] = make_half2(0.0f, 0.0f);
+            }
+        } else {
+            flash_attn_ext_f16_store_pair_q<type_KV>(buf, w[s]);
+        }
+#pragma unroll
+        for (int c = 0; c < bs/h2_per_chunk; ++c) {
+            ggml_cuda_memcpy_1<16>(swizzle<stride_tile>(tile_KV, i*stride_tile + p*bs + c*h2_per_chunk, i), buf + c*h2_per_chunk);
+        }
+    }
+}
+
 template<int ncols1, int nwarps, int nbatch_fa, bool use_cp_async, bool oob_check, bool use_sparse>
 static __device__ __forceinline__ void flash_attn_ext_f16_load_mask(
         const half * const __restrict__ mask_h, half * const __restrict__ tile_mask,
@@ -779,6 +879,18 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
         }
     }
 
+    // Quantized K/V without pipeline stages: start the global loads of both tiles now, dequantize each when it is needed.
+    constexpr bool prefetch_KV = type_KV != GGML_TYPE_F16 && nstages <= 1 && !V_is_K_view && nbatch_K2 == DKQ/2 && 2*nbatch_V2 == DV;
+    constexpr int  nw_KV       = flash_attn_ext_f16_pair_words<type_KV>();
+    uint32_t wK[prefetch_KV ? flash_attn_ext_f16_pair_slots<type_KV, nwarps, nbatch_fa, DKQ>() : 1][nw_KV];
+    uint32_t wV[prefetch_KV ? flash_attn_ext_f16_pair_slots<type_KV, nwarps, nbatch_fa, DV>()  : 1][nw_KV];
+    if constexpr (prefetch_KV) {
+        flash_attn_ext_f16_fetch_tile_q<type_KV, nwarps, nbatch_fa, DKQ, oob_check>
+            ((const char *) K_h2 + int64_t(k_VKQ_0)*stride_K, wK, stride_K, k_VKQ_sup);
+        flash_attn_ext_f16_fetch_tile_q<type_KV, nwarps, nbatch_fa, DV, oob_check>
+            ((const char *) V_h2 + int64_t(k_VKQ_0)*stride_V, wV, stride_V, k_VKQ_sup);
+    }
+
     // For MLA K and V have the same data.
     // Therefore, iterate over K in reverse and later re-use the data if possible.
 #pragma unroll
@@ -794,6 +906,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
                 if (use_cp_async) {
                     cp_async_wait_all();
                 }
+            } else if constexpr (prefetch_KV) {
+                flash_attn_ext_f16_store_tile_q<type_KV, stride_tile_K, nwarps, nbatch_fa, DKQ, oob_check>(tile_K, wK, k_VKQ_sup);
             } else {
                 flash_attn_ext_f16_load_tile_q<type_KV, stride_tile_K, nwarps, nbatch_fa, oob_check>
                     ((const char *) K_h2 + int64_t(k_VKQ_0)*stride_K, tile_K, 2*k0_start, 2*k0_diff, stride_K, k_VKQ_sup);
@@ -1152,6 +1266,8 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
                     if (use_cp_async) {
                         cp_async_wait_all();
                     }
+                } else if constexpr (prefetch_KV) {
+                    flash_attn_ext_f16_store_tile_q<type_KV, stride_tile_V, nwarps, nbatch_fa, DV, oob_check>(tile_V, wV, k_VKQ_sup);
                 } else {
                     flash_attn_ext_f16_load_tile_q<type_KV, stride_tile_V, nwarps, nbatch_fa, oob_check>
                         ((const char *) V_h2 + int64_t(k_VKQ_0)*stride_V, tile_V, i0_start, i0_diff, stride_V, k_VKQ_sup);
