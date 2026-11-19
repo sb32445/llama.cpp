@@ -159,6 +159,12 @@ json server_slot_stats::to_json() const {
         base["draft_n_accepted"] = n_draft_accepted;
     }
 
+    // a client can count force-closed turns without parsing reasoning_content for the budget message
+    if (reasoning_tracked) {
+        base["reasoning_n"]                = n_reasoning;
+        base["reasoning_budget_exhausted"] = reasoning_budget_exhausted;
+    }
+
     return base;
 }
 

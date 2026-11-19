@@ -2429,6 +2429,18 @@ private:
             res->content     = std::move(slot.generated);
             res->tokens      = std::move(slot.generated_tokens);
         }
+        {
+            int32_t n_reasoning = 0;
+            bool    exhausted   = false;
+            if (common_sampler_reasoning_budget_report(slot.smpl.get(), &n_reasoning, &exhausted)) {
+                slot.stats.reasoning_tracked          = true;
+                slot.stats.n_reasoning                = n_reasoning;
+                slot.stats.reasoning_budget_exhausted = exhausted;
+                if (exhausted) {
+                    SLT_INF(slot, "reasoning budget exhausted after %d reasoning tokens (end forced)\n", n_reasoning);
+                }
+            }
+        }
         res->stats           = slot.stats;
         res->prompt          = slot.task->tokens.detokenize(ctx_tgt, true);
         res->response_fields = std::move(slot.task->params.response_fields);
@@ -3884,6 +3896,17 @@ private:
         iterate(drafting, [&](server_slot & slot) {
             auto & draft = slot.spec_draft;
             auto & ckpt  = slot.spec_ckpt;
+
+            // a draft stops at its first end-of-generation token. Without this, an n-gram draft continues past the end
+            // of the answer (the history makes "<|im_end|>\n<|im_start|>..." easy to predict), the target accepts those
+            // tokens and reads them into the slot, and the next turn of the conversation, which differs there, cannot
+            // reuse the state after the answer (it falls back to a context checkpoint; a saved state is not a prefix)
+            for (size_t i = 0; i < draft.size(); ++i) {
+                if (llama_vocab_is_eog(vocab, draft[i])) {
+                    draft.resize(i + 1);
+                    break;
+                }
+            }
 
             slot.stats.n_draft_tokens += draft.size();
 

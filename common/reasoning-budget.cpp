@@ -65,7 +65,25 @@ struct common_reasoning_budget_ctx {
     size_t force_pos;         // next position in forced_tokens to force
 
     int32_t end_match;        // index into end_matcher.seqs of the sequence that transitioned to DONE, -1 if none
+
+    // reporting (whole response, across re-armed blocks)
+    int32_t n_reasoning = 0;  // tokens accepted inside reasoning blocks, end sequence and forced tokens included
+    bool    exhausted   = false; // the budget ran out and the end sequence was forced at least once
+    llama_tokens eog_ids;     // end-of-generation tokens, banned while the think block is open
 };
+
+static llama_tokens common_reasoning_budget_eog_ids(const llama_vocab * vocab) {
+    llama_tokens ids;
+    if (vocab != nullptr) {
+        const int32_t n = llama_vocab_n_tokens(vocab);
+        for (llama_token id = 0; id < n; id++) {
+            if (llama_vocab_is_eog(vocab, id)) {
+                ids.push_back(id);
+            }
+        }
+    }
+    return ids;
+}
 
 static const char * common_reasoning_budget_name(const struct llama_sampler * /*smpl*/) {
     return "reasoning-budget";
@@ -73,6 +91,11 @@ static const char * common_reasoning_budget_name(const struct llama_sampler * /*
 
 static void common_reasoning_budget_accept(struct llama_sampler * smpl, llama_token token) {
     auto * ctx = (common_reasoning_budget_ctx *) smpl->ctx;
+
+    if (ctx->state == REASONING_BUDGET_COUNTING || ctx->state == REASONING_BUDGET_WAITING_UTF8 ||
+        ctx->state == REASONING_BUDGET_FORCING) {
+        ctx->n_reasoning++;
+    }
 
     switch (ctx->state) {
         case REASONING_BUDGET_IDLE:
@@ -85,6 +108,7 @@ static void common_reasoning_budget_accept(struct llama_sampler * smpl, llama_to
                 if (ctx->remaining <= 0) {
                     ctx->state = REASONING_BUDGET_FORCING;
                     ctx->force_pos = 0;
+                    ctx->exhausted = true;
                     COM_TRC("%s", "budget=0, forcing immediately\n");
                 }
             }
@@ -117,6 +141,7 @@ static void common_reasoning_budget_accept(struct llama_sampler * smpl, llama_to
             } else if (ctx->state == REASONING_BUDGET_COUNTING) {
                 ctx->remaining--;
                 if (ctx->remaining <= 0) {
+                    ctx->exhausted = true;
                     if (utf8_complete) {
                         ctx->state = REASONING_BUDGET_FORCING;
                         ctx->force_pos = 0;
@@ -156,6 +181,7 @@ static void common_reasoning_budget_accept(struct llama_sampler * smpl, llama_to
                 if (ctx->remaining <= 0) {
                     ctx->state = REASONING_BUDGET_FORCING;
                     ctx->force_pos = 0;
+                    ctx->exhausted = true;
                     COM_TRC("%s", "budget=0, forcing immediately\n");
                 }
             }
@@ -165,6 +191,25 @@ static void common_reasoning_budget_accept(struct llama_sampler * smpl, llama_to
 
 static void common_reasoning_budget_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
     auto * ctx = (common_reasoning_budget_ctx *) smpl->ctx;
+
+    // inside an open think block an end-of-generation token would end the turn with no answer and no tool call
+    // (low-bit checkpoints leak a little probability onto it; over thousands of thinking tokens at temp 1 it gets
+    // sampled): the block has to close first, by the model or by the budget
+    if (ctx->state == REASONING_BUDGET_COUNTING || ctx->state == REASONING_BUDGET_WAITING_UTF8) {
+        for (const llama_token eog : ctx->eog_ids) {
+            if ((size_t) eog < cur_p->size && cur_p->data[eog].id == eog) {   // full vocab in id order (the CPU path)
+                cur_p->data[eog].logit = -INFINITY;
+                continue;
+            }
+            for (size_t i = 0; i < cur_p->size; i++) {
+                if (cur_p->data[i].id == eog) {
+                    cur_p->data[i].logit = -INFINITY;
+                    break;
+                }
+            }
+        }
+        return;
+    }
 
     if (ctx->state != REASONING_BUDGET_FORCING) {
         // passthrough — don't modify logits
@@ -193,6 +238,8 @@ static void common_reasoning_budget_reset(struct llama_sampler * smpl) {
     ctx->end_matcher.reset();
     ctx->force_pos = 0;
     ctx->end_match = -1;
+    ctx->n_reasoning = 0;
+    ctx->exhausted = false;
 }
 
 static struct llama_sampler * common_reasoning_budget_init_state(
@@ -238,7 +285,8 @@ static struct llama_sampler * common_reasoning_budget_init_state(
         int32_t                           budget,
         common_reasoning_budget_state     initial_state) {
     // promote COUNTING with budget <= 0 to FORCING
-    if (initial_state == REASONING_BUDGET_COUNTING && budget <= 0) {
+    const bool exhausted_at_init = initial_state == REASONING_BUDGET_COUNTING && budget <= 0;
+    if (exhausted_at_init) {
         initial_state = REASONING_BUDGET_FORCING;
     }
 
@@ -254,6 +302,9 @@ static struct llama_sampler * common_reasoning_budget_init_state(
             /* .state         = */ initial_state,
             /* .force_pos     = */ 0,
             /* .end_match     = */ -1,
+            /* .n_reasoning   = */ 0,
+            /* .exhausted     = */ exhausted_at_init,
+            /* .eog_ids       = */ common_reasoning_budget_eog_ids(vocab),
         }
     );
 }
@@ -286,6 +337,16 @@ const llama_tokens * common_reasoning_budget_get_end_match(const struct llama_sa
     }
 
     return &ctx->end_matcher.seqs[ctx->end_match];
+}
+
+void common_reasoning_budget_get_report(const struct llama_sampler * smpl, int32_t * n_reasoning, bool * exhausted) {
+    const auto * ctx = smpl ? (const common_reasoning_budget_ctx *) smpl->ctx : nullptr;
+    if (n_reasoning) {
+        *n_reasoning = ctx ? ctx->n_reasoning : 0;
+    }
+    if (exhausted) {
+        *exhausted = ctx ? ctx->exhausted : false;
+    }
 }
 
 bool common_reasoning_budget_force(struct llama_sampler * smpl) {
