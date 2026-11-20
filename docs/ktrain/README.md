@@ -1,12 +1,32 @@
 # kTrain patches for the Prism llama.cpp fork
 
 Decode-speed patches for PTQ1_0 / PQ2_0 ternary models (tested with Ternary-Bonsai-2-27B plus an MTP draft head) on NVIDIA Ada (RTX 4070, cc 8.9).
-They are offered to PrismML as separate pull requests. This branch (`ktrain`) is `prism` plus the two that are still open, for
-people who do not want to wait for the merges, plus two prefill patches that are not submitted and one sampler patch (see below).
+They are offered to PrismML as separate pull requests. This branch (`ktrain`) is `prism` plus those that are still open ([#310](https://github.com/PrismML-Eng/llama.cpp/pull/310), [#314](https://github.com/PrismML-Eng/llama.cpp/pull/314), [#410](https://github.com/PrismML-Eng/llama.cpp/pull/410), [#411](https://github.com/PrismML-Eng/llama.cpp/pull/411)), for people who do not want to wait for the merges, one prefill patch and one sampler patch that are not submitted, PrismML's open pull requests #319 and #320 (tiered KV cache and draft window, by Cary Palmer) and eight commits ported from his bonsai-ada-surgery series (see "Tiered KV and ported patches" below).
 
-Base: `prism` at `5628c7338` (build 12130, 2026-10-30; rebased 2026-11-02, before that `c96baf4ab` and `9d9efeadb`). Seven earlier patches of this stack are already part of `prism` (#306 to #309, #311 to #313; the table below lists them).
+Base: `prism` at `3f035ba66` (2026-11-16, includes #338 `--checkpoint-every-nt`). Earlier bases were `5628c7338` (build 12130, 2026-10-30), `c96baf4ab` and `9d9efeadb`; the measurements below name the base they were taken on. Seven earlier patches of this stack are already part of `prism` (#306 to #309, #311 to #313; the table below lists them).
 
-## Open patches (the first two commits of this branch)
+## Tiered KV and ported patches (2026-11-19 to 2026-11-20)
+
+PrismML's open pull requests #319 (`--kv-vram-cells N`: the first N cells of the KV cache live in VRAM, the rest in pinned host memory in one VMM range) and #320 (`--spec-draft-window`, MTP drafting at every depth) are in this branch unchanged, with Cary Palmer as author (three commits for #320, two for #319). On top of them eight commits port patches from his [bonsai-ada-surgery](https://github.com/professorpalmer/bonsai-ada-surgery) series (MIT); each commit message names the patch number, and where a hunk or call site had to be adapted to this tree it says so:
+
+| Commit subject (short) | Patch | What |
+|---|---|---|
+| route quantized-KV GQA decode to the in-place MMA flash-attention kernel | 29 | decode with more than 4 queries per KV head and at most 8 queries (decode, speculative verify) uses the MMA kernel instead of the vector kernel for q4_0/q8_0 K/V from 256 KV cells on (`GGML_CUDA_FA_MMA_DECODE_MIN_KV`, 0 = never) |
+| tiered KV prefill writes new rows through the VRAM alias and prefetches host rows | 41 | prefill graphs write new rows to VRAM first and copy them to the host pages in whole 16-byte stores; the host rows of the next attention op are staged on a second stream (`GGML_CUDA_KV_TIER_REDIRECT=0`, `GGML_CUDA_KV_TIER_PREFETCH=0` turn this off) |
+| run graphs that read the host tail without CUDA graphs | 53 | the prefetch pipeline only runs on the non-graph path (`GGML_CUDA_KV_TIER_GRAPHS=1` restores the old behaviour) |
+| partial staging, in-place reads for small attention ops, quieter graph log | 47, 71 | `GGML_CUDA_KV_TIER_STAGING_FRAC` and `GGML_CUDA_KV_TIER_STAGE_MIN_Q`, both off by default |
+| `--spec-draft-n-max-tail` | 31 (rest) | draft size once the sequence reaches the `--kv-vram-cells` line, where a wider verify batch reads the host tail once for all columns; 0 = `--spec-draft-n-max` |
+| report reasoning tokens, stop drafts at EOG, no EOG in an open think block, F16 prefill only for large batches | 35, 67, 73, 43 | server and reasoning-budget fixes; `GGML_CUDA_FA_PREFILL_F16_MIN_Q` (default 64 queries) keeps speculative verify batches on the in-place quantized read |
+| dequantize K/V tiles as packed halves in the MMA loader | 57 | q4_0 and q8_0 only (the q3_0 part is left out, this tree has no q3_0 KV type), tile bit-identical to a `to_fp16` pass |
+| load both tiles up front (FA MMA, quantized K/V, no pipeline stages) | 72 | loads of the K and V tile words start at the beginning of the tile, each tile is dequantized when needed |
+
+What was measured (RTX 4070 12 GB, Ternary-Bonsai-2-27B variant with PTQ1_0 + MTP head, q4_0 K/V, single runs, not repeated):
+- **262k window:** with `--kv-vram-cells 218000`, `-ub 256` and `--spec-draft-n-max-tail 4` (the value at the time of the run) the server took a prompt of 257,654 tokens without error (VRAM peak 11,434 MiB, no checkpoint dropped). Decode 86.6 / 58.2 / 53.9 / 37.4 / 36.6 / 36.1 tok/s at 32k / 131k / 210k / 230k / 245k / 258k of context with prose prompts and short answers (draft acceptance 21 to 26 % there); a code question behind 218k decoded at 68 to 74 tok/s. A needle test with six needles found five; the one at about 100k tokens was wrong at 258k and right at 131k, the cause is not known.
+- **Decode, this branch against the same branch without the last three ported commits** (the two kernel commits for patches 57 and 72 and the server/reasoning-budget commit; one run per depth): decode +1.5 % / +4.2 % / +6.2 % at 32k / 128k / 192k of context; output hashes equal.
+- `test-backend-ops` (`FLASH_ATTN_EXT`) 4492 of 4492 cases on this state; the full operator suite (20797 of 20797 cases) was run on the state before the tiered-KV and ported commits (the branch at `611730568`), not again afterwards.
+- Not measured: other GPUs, more than one server slot with the tiered cache, vision input, quality (perplexity) of the tiered-KV commits.
+
+## Open patches (the first commits of this stack)
 
 | PR | Commit | What | Effect on the RTX 4070 (MTP `n-max 2`, 8 interleaved A/B pairs, outputs identical) |
 |---|---|---|---|
@@ -15,7 +35,7 @@ Base: `prism` at `5628c7338` (build 12130, 2026-10-30; rebased 2026-11-02, befor
 
 The pull-request branches `pr/ptq1-gate-up-fuse-mc` and `pr/ptq1-l2-prefetch` carry the same patches as separate branches, based on an older `prism`; this branch has them squashed to one commit each and ported to `prism`'s current `ggml_cuda_try_fwht_q8`.
 
-## Prefill patches (the next two commits, not submitted)
+## Prefill patches (#410 and #411, open)
 
 | Commit | What | Effect on the RTX 4070 (prefill, q4_0 K/V) |
 |---|---|---|
@@ -35,6 +55,8 @@ Prefill speed without a server (`llama-bench`, pp2048, `-ub 512`, q4_0 K/V, 2 re
 In `llama-server` the prefill of 114688 tokens takes 139.9 s instead of 157.7 s (-11.3 %); -5.9 % at 2048, -7.7 % at 32768, -8.9 % at 65536. These two commits are **not bit-identical** to `prism`: perplexity 14.5129 / 12.7715 against 14.5316 / 12.7576 (within the error of 0.62 / 0.38), and the generated text of a greedy run changes, which moves the MTP acceptance in either direction (4 prompts: 74.0 -> 72.0 %, decode -0.84 %; one code question per depth: -1.7 % to +3.2 %). They are measured on the GPU above only; the decode kernels are unchanged.
 
 **Numerics of the two open patches:** on the earlier base `c96baf4ab` both left the results unchanged (perplexity and all generated texts bit-identical to `prism`, at every depth tested). That was not repeated on `5628c7338` separately; the whole branch is not bit-identical because of the prefill commits.
+
+**Not submitted: SwiGLU + Hadamard fusion for prompt batches** (two commits, "SwiGLU + sign flip + Hadamard transform in one launch for prompt batches" and its q8_1 follow-up for the PTQ1_0 MMQ). No measurement of it is published here.
 
 ## Sampler patch (one commit)
 
@@ -95,10 +117,10 @@ Four prompts at depth 0 with 8 interleaved A/B pairs: 116.49 -> 118.80 tok/s, **
 
 ## Limits
 - One GPU (RTX 4070, cc 8.9) and one model family; other hardware is untested, the L2 prefetch in particular is tuned on this GPU (the 2 MiB cap for other GPUs is not measured).
-- Greedy decoding only in the table above; no `llm-testsuite`-style run for this state; multiple server slots, 262k context and vision are untested.
+- Greedy decoding only in the tables from the earlier bases; no `llm-testsuite`-style run for this state; multiple server slots with the tiered cache and vision are untested. The 262k results above are single runs.
 
 ## Using the branch
-Build as usual (`-DGGML_CUDA=ON`); there are no new build options and no environment switches.
+Build as usual (`-DGGML_CUDA=ON`); there are no new build options. New server options: `--kv-vram-cells`, `--spec-draft-window` (both from PrismML's #319/#320) and `--spec-draft-n-max-tail`. The environment switches listed in the table above are all optional and keep their defaults unless set.
 
 ## AI assistance
 The patches were developed with Claude Code (Anthropic's coding agent): it wrote the code,
@@ -106,4 +128,4 @@ the measurement scripts and the first drafts of the commit messages and PR texts
 I decided what to work on (which kernels and host paths to optimise, based on profiles of
 my own decode setup). The measurements and checks listed in the PR texts were run in the
 Claude Code sessions; I did not re-run them independently. I will maintain the changes.
-Commits where Claude Code was used carry a `Co-Authored-By` trailer.
+Commits where Claude Code was used carry a `Co-Authored-By` trailer. That includes the eight commits ported from the bonsai-ada-surgery series; the original code in them is Cary Palmer's, the porting to this tree was done with Claude Code. Commits of #319 and #320 are his and unchanged.
